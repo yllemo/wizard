@@ -1,0 +1,39 @@
+name: PHP Syntax Check
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  php-syntax:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup PHP
+      uses: shivammathur/setup-php@v2
+      with:
+        php-version: '7.4'
+        extensions: curl, zip
+        
+    - name: Check PHP syntax
+      run: |
+        php -l index.php
+        
+    - name: Check for .env file
+      run: |
+        if [ -f ".env" ]; then
+          echo "❌ .env file found in repository - this should not be committed!"
+          echo "Please ensure .env is in .gitignore"
+          exit 1
+        else
+          echo "✅ No .env file found - good!"
+        fi
+        
+    - name: Check required extensions
+      run: |
+        php -m | grep -E "(curl|zip)" || (echo "❌ Required extensions missing" && exit 1)
+        echo "✅ Required extensions found"

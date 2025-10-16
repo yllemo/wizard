@@ -1,0 +1,52 @@
+# Environment variables
+.env
+.env.local
+.env.production
+
+# Sensitive data
+data/meetings/
+data/uploads/
+data/temp/
+
+# Log files
+*.log
+logs/
+
+# Cache files
+cache/
+tmp/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Backup files
+*.bak
+*.backup
+*.old
+
+# Temporary files
+*.tmp
+*.temp
+
+# Node modules (if any)
+node_modules/
+
+# Composer (if used)
+vendor/
+
+# PHP specific
+*.php~
+.phpunit.result.cache
+
+# Local development
+local/
+dev/

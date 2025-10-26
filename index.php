@@ -22,6 +22,27 @@ function storage_path(): string{ $p=rtrim(env_get('STORAGE_PATH','data'),'/'); i
 function meeting_dir(string $id): string{ $b=storage_path()."/meetings/$id"; if(!is_dir($b)) mkdir($b,0775,true); if(!is_dir("$b/audio")) mkdir("$b/audio",0775,true); if(!is_dir("$b/versions")) mkdir("$b/versions",0775,true); return $b; }
 function json_out(array $p, int $s=200){ http_response_code($s); header('Content-Type: application/json; charset=utf-8'); echo json_encode($p, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES); exit; }
 
+// Error logging functions
+function logError($meetingId, $error, $context = []) {
+  $dir = meeting_dir($meetingId);
+  $errorFile = "$dir/error.txt";
+  
+  $timestamp = date('Y-m-d H:i:s');
+  $contextStr = !empty($context) ? ' | Context: ' . json_encode($context, JSON_UNESCAPED_UNICODE) : '';
+  $logEntry = "[$timestamp] $error$contextStr\n";
+  
+  file_put_contents($errorFile, $logEntry, FILE_APPEND | LOCK_EX);
+  error_log("Meeting $meetingId error: $error");
+}
+
+function logApiError($meetingId, $error, $status = null, $raw = null) {
+  $context = [];
+  if ($status) $context['status'] = $status;
+  if ($raw) $context['raw'] = substr($raw, 0, 500); // Limit raw response size
+  
+  logError($meetingId, $error, $context);
+}
+
 // Save agenda to file
 function saveAgenda($meetingId, $agendaContent) {
   if (!$agendaContent) return false;
@@ -120,36 +141,59 @@ if($action==='create_meeting'){
 // Load existing meeting
 if($action==='load_meeting'){
   $meetingId=$_GET['meetingId']??null;
-  if(!$meetingId) json_out(['ok'=>false,'error'=>'meetingId required'],400);
-  
-  $dir = meeting_dir($meetingId);
-  $stateFile = "$dir/meeting_state.json";
-  
-  if(!file_exists($stateFile)){
-    json_out(['ok'=>false,'error'=>'Meeting not found'],404);
+  if(!$meetingId) {
+    json_out(['ok'=>false,'error'=>'meetingId required'],400);
   }
   
-  $state = json_decode(file_get_contents($stateFile), true);
-  
-  // Load additional data from files
-  $state['agenda'] = file_exists("$dir/agenda.md") ? file_get_contents("$dir/agenda.md") : '';
-  $state['transcript'] = file_exists("$dir/transcript.txt") ? file_get_contents("$dir/transcript.txt") : '';
-  $state['filled'] = file_exists("$dir/filled.md") ? file_get_contents("$dir/filled.md") : '';
-  $state['chatDialog'] = file_exists("$dir/chat_dialog.json") ? file_get_contents("$dir/chat_dialog.json") : '';
-  
-  // Load uploaded file info
-  $audioFiles = glob("$dir/audio/*");
-  if(!empty($audioFiles)){
-    $audioFile = $audioFiles[0]; // Get first audio file
-    $state['uploaded'] = [
-      'path' => $audioFile,
-      'filename' => basename($audioFile),
-      'size' => filesize($audioFile),
-      'type' => mime_content_type($audioFile)
-    ];
+  try {
+    $dir = meeting_dir($meetingId);
+    $stateFile = "$dir/meeting_state.json";
+    
+    if(!file_exists($stateFile)){
+      $errorMsg = 'Meeting not found: ' . $meetingId;
+      logError($meetingId, $errorMsg, ['state_file' => $stateFile]);
+      json_out(['ok'=>false,'error'=>$errorMsg],404);
+    }
+    
+    $stateContent = file_get_contents($stateFile);
+    if($stateContent === false) {
+      $errorMsg = 'Could not read meeting state file';
+      logError($meetingId, $errorMsg, ['state_file' => $stateFile]);
+      json_out(['ok'=>false,'error'=>$errorMsg],500);
+    }
+    
+    $state = json_decode($stateContent, true);
+    if($state === null) {
+      $errorMsg = 'Invalid JSON in meeting state file';
+      logError($meetingId, $errorMsg, ['state_file' => $stateFile, 'content' => substr($stateContent, 0, 200)]);
+      json_out(['ok'=>false,'error'=>$errorMsg],500);
+    }
+    
+    // Load additional data from files
+    $state['agenda'] = file_exists("$dir/agenda.md") ? file_get_contents("$dir/agenda.md") : '';
+    $state['transcript'] = file_exists("$dir/transcript.txt") ? file_get_contents("$dir/transcript.txt") : '';
+    $state['filled'] = file_exists("$dir/filled.md") ? file_get_contents("$dir/filled.md") : '';
+    $state['chatDialog'] = file_exists("$dir/chat_dialog.json") ? file_get_contents("$dir/chat_dialog.json") : '';
+    
+    // Load uploaded file info
+    $audioFiles = glob("$dir/audio/*");
+    if(!empty($audioFiles)){
+      $audioFile = $audioFiles[0]; // Get first audio file
+      $state['uploaded'] = [
+        'path' => $audioFile,
+        'filename' => basename($audioFile),
+        'size' => filesize($audioFile),
+        'type' => mime_content_type($audioFile)
+      ];
+    }
+    
+    json_out(['ok'=>true,'meeting'=>$state]);
+    
+  } catch (Exception $e) {
+    $errorMsg = 'Error loading meeting: ' . $e->getMessage();
+    logError($meetingId, $errorMsg, ['exception' => $e->getMessage(), 'trace' => $e->getTraceAsString()]);
+    json_out(['ok'=>false,'error'=>$errorMsg],500);
   }
-  
-  json_out(['ok'=>true,'meeting'=>$state]);
 }
 
 // List existing meetings
@@ -308,8 +352,9 @@ if($action==='upload'){
   error_log("Upload - target path: $target");
   
   if(!move_uploaded_file($_FILES['audio']['tmp_name'],$target)){
-    error_log("Failed to move uploaded file to: $target");
-    json_out(['ok'=>false,'error'=>'move_uploaded_file failed'],500);
+    $errorMsg = 'move_uploaded_file failed';
+    logError($meetingId, $errorMsg, ['target' => $target, 'file_size' => $_FILES['audio']['size']]);
+    json_out(['ok'=>false,'error'=>$errorMsg],500);
   }
   
   error_log("Upload successful - file saved to: $target");
@@ -364,7 +409,6 @@ if($action==='transcribe'){
     $fileExtension = strtolower(pathinfo($path, PATHINFO_EXTENSION));
     
     if(!in_array($fileExtension, $allowedExtensions)) {
-      error_log("Unsupported file format: $fileExtension");
       $suggestedFormat = suggestFormatConversion($fileExtension);
       $errorMessage = 'Ogiltigt filformat: ' . strtoupper($fileExtension) . '. Stödda format: ' . implode(', ', array_map('strtoupper', $allowedExtensions));
       
@@ -372,6 +416,7 @@ if($action==='transcribe'){
         $errorMessage .= '. Försök konvertera till ' . strtoupper($suggestedFormat) . ' format.';
       }
       
+      logError($meetingId, $errorMessage, ['file_extension' => $fileExtension, 'file_path' => $path]);
       json_out(['ok'=>false,'error'=>$errorMessage],400);
     }
     
@@ -395,8 +440,9 @@ if($action==='transcribe'){
       if($res===false){
         $err=curl_error($ch); 
         curl_close($ch); 
-        error_log("CURL error: $err");
-        json_out(['ok'=>false,'error'=>'Network error: ' . $err],500);
+        $errorMsg = 'Network error: ' . $err;
+        logApiError($meetingId, $errorMsg);
+        json_out(['ok'=>false,'error'=>$errorMsg],500);
       }
       
       $status=curl_getinfo($ch,CURLINFO_HTTP_CODE); 
@@ -423,26 +469,30 @@ if($action==='transcribe'){
           }
         }
         
+        logApiError($meetingId, $errorMessage, $status, $res);
         json_out(['ok'=>false,'error'=>$errorMessage,'status'=>$status,'raw'=>$res],500);
       }
       
       $j=json_decode($res,true); 
       if(!is_array($j)) {
-        error_log("Invalid JSON response: " . $res);
-        json_out(['ok'=>false,'error'=>'Invalid API response','raw'=>$res],500);
+        $errorMsg = 'Invalid API response';
+        logApiError($meetingId, $errorMsg, null, $res);
+        json_out(['ok'=>false,'error'=>$errorMsg,'raw'=>$res],500);
       }
       
       $text=$j['text']??'';
       if(empty($text)) {
-        error_log("Empty transcription result");
-        json_out(['ok'=>false,'error'=>'Empty transcription result'],500);
+        $errorMsg = 'Empty transcription result';
+        logError($meetingId, $errorMsg);
+        json_out(['ok'=>false,'error'=>$errorMsg],500);
       }
       
       error_log("Transcription successful, length: " . strlen($text));
       
     } catch (Exception $e) {
-      error_log("Transcription exception: " . $e->getMessage());
-      json_out(['ok'=>false,'error'=>'Transcription failed: ' . $e->getMessage()],500);
+      $errorMsg = 'Transcription failed: ' . $e->getMessage();
+      logError($meetingId, $errorMsg, ['exception' => $e->getMessage(), 'trace' => $e->getTraceAsString()]);
+      json_out(['ok'=>false,'error'=>$errorMsg],500);
     }
   }
   
@@ -533,9 +583,22 @@ if($action==='llm_chat'){
     $payload=['model'=>$model,'temperature'=>$temperature,'messages'=>$messagesArray];
     $ch=curl_init($url);
     curl_setopt_array($ch,[CURLOPT_RETURNTRANSFER=>true,CURLOPT_POST=>true,CURLOPT_HTTPHEADER=>['Authorization: Bearer '.$apiKey,'Content-Type: application/json'],CURLOPT_POSTFIELDS=>json_encode($payload, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES)]);
-    $res=curl_exec($ch); if($res===false){$err=curl_error($ch); curl_close($ch); json_out(['ok'=>false,'error'=>$err],500);}
-    $status=curl_getinfo($ch,CURLINFO_HTTP_CODE); curl_close($ch);
-    $j=json_decode($res,true); if($status>=400||!isset($j['choices'][0]['message']['content'])) json_out(['ok'=>false,'error'=>'LLM error','raw'=>$res],500);
+    $res=curl_exec($ch); 
+    if($res===false){
+      $err=curl_error($ch); 
+      curl_close($ch); 
+      $errorMsg = 'LLM network error: ' . $err;
+      logApiError($meetingId, $errorMsg);
+      json_out(['ok'=>false,'error'=>$errorMsg],500);
+    }
+    $status=curl_getinfo($ch,CURLINFO_HTTP_CODE); 
+    curl_close($ch);
+    $j=json_decode($res,true); 
+    if($status>=400||!isset($j['choices'][0]['message']['content'])) {
+      $errorMsg = 'LLM API error (status: ' . $status . ')';
+      logApiError($meetingId, $errorMsg, $status, $res);
+      json_out(['ok'=>false,'error'=>$errorMsg,'raw'=>$res],500);
+    }
     $response = $j['choices'][0]['message']['content'];
     
     // The entire response should be treated as the filled template
@@ -898,6 +961,27 @@ if($action==='load_transcript'){
     json_out(['ok'=>true,'transcript'=>$transcript]);
   } else {
     json_out(['ok'=>false,'error'=>'No transcript found']);
+  }
+}
+
+// Download error log
+if($action==='download_error_log'){
+  $meetingId = $_GET['meetingId'] ?? null;
+  if(!$meetingId){
+    http_response_code(400); echo "meetingId required"; exit;
+  }
+  
+  $dir = meeting_dir($meetingId);
+  $errorFile = "$dir/error.txt";
+  
+  if(file_exists($errorFile)){
+    $errorLog = file_get_contents($errorFile);
+    header('Content-Type: text/plain; charset=utf-8');
+    header('Content-Disposition: attachment; filename="error_log_' . $meetingId . '.txt"');
+    echo $errorLog;
+    exit;
+  } else {
+    http_response_code(404); echo "No error log found"; exit;
   }
 }
 
@@ -1268,6 +1352,38 @@ $_SESSION['meetingId'] = $meetingId;
     </div>
     <div class="modal-footer">
       <button class="btn" id="closeMeetingBtn">Stäng</button>
+    </div>
+  </div>
+</div>
+
+<!-- Error Modal -->
+<div id="errorModal" class="modal">
+  <div class="modal-content error-modal">
+    <div class="modal-header">
+      <h2>⚠️ Fel uppstod</h2>
+      <button class="modal-close" id="closeErrorModal">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="error-details">
+        <h3>Felmeddelande:</h3>
+        <div id="errorMessage" class="error-message"></div>
+        
+        <h3>Detaljer:</h3>
+        <div id="errorDetails" class="error-details-content"></div>
+        
+        <h3>Vad kan du göra:</h3>
+        <ul class="error-suggestions">
+          <li>Kontrollera din internetanslutning</li>
+          <li>Försök igen om några minuter</li>
+          <li>Kontrollera att API-nycklarna är korrekt konfigurerade i .env-filen</li>
+          <li>Kontakta support om problemet kvarstår</li>
+        </ul>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" id="copyErrorBtn">📋 Kopiera fel</button>
+      <button class="btn" id="viewErrorLogBtn">📄 Visa fel-logg</button>
+      <button class="btn primary" id="closeErrorBtn">Stäng</button>
     </div>
   </div>
 </div>

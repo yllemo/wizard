@@ -2,26 +2,205 @@
 const $ = s => document.querySelector(s);
 const $$ = s => Array.from(document.querySelectorAll(s));
 
+// Safe element access with null checking
+function safeSetStyle(element, property, value) {
+  if (element && element.style) {
+    element.style[property] = value;
+  }
+}
+
+function safeSetTextContent(element, text) {
+  if (element) {
+    element.textContent = text;
+  }
+}
+
+// Safe JSON parsing with error handling
+async function safeJsonParse(response, context = 'API response') {
+  try {
+    const text = await response.text();
+    
+    // Check if response is HTML (common for timeouts/errors)
+    if (text.trim().startsWith('<')) {
+      const errorMsg = `${context}: Fick HTML-svar istället för JSON (möjlig timeout eller serverfel)`;
+      const details = {
+        status: response.status,
+        statusText: response.statusText,
+        contentType: response.headers.get('content-type'),
+        responseText: text.substring(0, 500) + (text.length > 500 ? '...' : '')
+      };
+      throw new Error(errorMsg, details);
+    }
+    
+    // Try to parse as JSON
+    try {
+      return JSON.parse(text);
+    } catch (jsonError) {
+      const errorMsg = `${context}: Ogiltigt JSON-svar`;
+      const details = {
+        status: response.status,
+        statusText: response.statusText,
+        contentType: response.headers.get('content-type'),
+        jsonError: jsonError.message,
+        responseText: text.substring(0, 500) + (text.length > 500 ? '...' : '')
+      };
+      throw new Error(errorMsg, details);
+    }
+  } catch (error) {
+    // Re-throw with additional context
+    error.response = response;
+    throw error;
+  }
+}
+
+// Enhanced fetch with comprehensive error handling
+async function safeFetch(url, options = {}, context = 'API call') {
+  try {
+    const response = await fetch(url, options);
+    
+    // Check for HTTP errors
+    if (!response.ok) {
+      const errorMsg = `${context}: HTTP ${response.status} ${response.statusText}`;
+      const details = {
+        status: response.status,
+        statusText: response.statusText,
+        url: url,
+        method: options.method || 'GET'
+      };
+      
+      // Try to get response text for more details
+      try {
+        const responseText = await response.text();
+        details.responseText = responseText.substring(0, 500) + (responseText.length > 500 ? '...' : '');
+      } catch (e) {
+        details.responseText = 'Kunde inte läsa svar';
+      }
+      
+      const error = new Error(errorMsg);
+      error.details = details;
+      throw error;
+    }
+    
+    return response;
+  } catch (error) {
+    // Add context to network errors
+    if (error.name === 'TypeError' && error.message.includes('fetch')) {
+      const networkError = new Error(`${context}: Nätverksfel - kontrollera internetanslutning`);
+      networkError.details = {
+        originalError: error.message,
+        url: url,
+        method: options.method || 'GET'
+      };
+      throw networkError;
+    }
+    throw error;
+  }
+}
+
 // Toast notification system
 function toast(message, type = 'success') {
   const el = $('#toast');
+  if (!el) return; // Exit if toast element doesn't exist
+  
   el.textContent = message;
   
   // Update styling based on type
   el.className = 'toast';
   if (type === 'error') {
-    el.style.borderColor = 'var(--err)';
+    el.classList.add('error');
     el.style.color = 'var(--err)';
   } else if (type === 'warning') {
-    el.style.borderColor = 'var(--warning)';
+    el.classList.add('warning');
     el.style.color = 'var(--warning)';
   } else {
-    el.style.borderColor = 'var(--ok)';
+    el.classList.add('success');
     el.style.color = 'var(--ok)';
   }
   
   el.classList.add('show');
-  setTimeout(() => el.classList.remove('show'), 3000);
+  
+  // Longer display time for errors, shorter for success
+  const displayTime = type === 'error' ? 8000 : type === 'warning' ? 6000 : 4000;
+  setTimeout(() => el.classList.remove('show'), displayTime);
+  
+  // Add click to dismiss functionality
+  el.onclick = () => el.classList.remove('show');
+}
+
+// Error modal system
+function showErrorModal(error, details = null) {
+  const modal = $('#errorModal');
+  const errorMessage = $('#errorMessage');
+  const errorDetails = $('#errorDetails');
+  
+  if (!modal || !errorMessage || !errorDetails) return; // Exit if elements don't exist
+  
+  errorMessage.textContent = error;
+  
+  if (details) {
+    errorDetails.textContent = typeof details === 'string' ? details : JSON.stringify(details, null, 2);
+  } else {
+    errorDetails.textContent = 'Inga ytterligare detaljer tillgängliga.';
+  }
+  
+  modal.style.display = 'block';
+}
+
+function hideErrorModal() {
+  const errorModal = $('#errorModal');
+  if (errorModal) {
+    errorModal.style.display = 'none';
+  }
+}
+
+// Enhanced error handling function
+function handleError(error, details = null, showModal = true) {
+  console.error('Application error:', error, details);
+  
+  // Show toast notification
+  toast(error, 'error');
+  
+  // Show detailed error modal for serious errors
+  if (showModal && (error.length > 50 || details)) {
+    showErrorModal(error, details);
+  }
+}
+
+// AI Processing Indicator Functions
+function showAIProcessingIndicator(type, title, detail) {
+  // Remove any existing indicator
+  hideAIProcessingIndicator();
+  
+  const indicator = document.createElement('div');
+  indicator.id = 'ai-processing-indicator';
+  indicator.className = `ai-status ${type}`;
+  
+  const icon = type === 'transcribing' ? '🎤' : '🤖';
+  
+  indicator.innerHTML = `
+    <div class="ai-status-icon">${icon}</div>
+    <div>
+      <div class="ai-status-text">${title}</div>
+      <div class="ai-status-detail">${detail}</div>
+    </div>
+    <div class="loading-spinner"></div>
+  `;
+  
+  // Insert at the top of the current panel
+  const currentPanel = document.querySelector('.step:not([style*="display: none"])');
+  if (currentPanel) {
+    currentPanel.insertBefore(indicator, currentPanel.firstChild);
+  } else {
+    // Fallback: insert at the top of the body if no panel found
+    document.body.insertBefore(indicator, document.body.firstChild);
+  }
+}
+
+function hideAIProcessingIndicator() {
+  const indicator = document.getElementById('ai-processing-indicator');
+  if (indicator) {
+    indicator.remove();
+  }
 }
 
 // Application state
@@ -52,7 +231,15 @@ function init() {
   const urlParams = new URLSearchParams(window.location.search);
   const meetingId = urlParams.get('meeting');
   
-  if (meetingId) {
+  if (meetingId && meetingId.trim() !== '') {
+    // Validate meeting ID format
+    if (!/^[a-zA-Z0-9_-]+$/.test(meetingId)) {
+      const errorMsg = 'Ogiltigt mötes-ID format i URL';
+      handleError(errorMsg, {meetingId: meetingId}, true);
+      showMeetingSelection();
+      return;
+    }
+    
     // Load existing meeting
     state.meetingId = meetingId;
     updateMeetingIdDisplay(meetingId);
@@ -266,9 +453,15 @@ async function createNewMeeting() {
 }
 
 async function loadMeetingFromServer(meetingId) {
+  if (!meetingId || meetingId.trim() === '') {
+    const errorMsg = 'Ogiltigt mötes-ID';
+    handleError(errorMsg, {meetingId: meetingId}, true);
+    return;
+  }
+  
   try {
-    const response = await fetch(`index.php?action=load_meeting&meetingId=${encodeURIComponent(meetingId)}`);
-    const result = await response.json();
+    const response = await safeFetch(`index.php?action=load_meeting&meetingId=${encodeURIComponent(meetingId)}`, {}, 'Mötesladdning');
+    const result = await safeJsonParse(response, 'Mötesladdning');
     
     if (result.ok && result.meeting) {
       const meeting = result.meeting;
@@ -303,12 +496,12 @@ async function loadMeetingFromServer(meetingId) {
       
       console.log('Meeting loaded from server:', meeting);
     } else {
-      toast('Fel vid laddning av möte', 'error');
-      console.error('Load meeting error:', result.error);
+      const errorMsg = result.error || 'Fel vid laddning av möte';
+      handleError(errorMsg, result, true);
     }
   } catch (error) {
-    toast('Fel vid laddning av möte', 'error');
-    console.error('Load meeting error:', error);
+    const errorMsg = 'Fel vid laddning av möte: ' + error.message;
+    handleError(errorMsg, error.details || error, true);
   }
 }
 
@@ -329,10 +522,13 @@ async function sendChatMessage() {
   // Clear input
   input.value = '';
   
+  // Show AI processing indicator
+  showAIProcessingIndicator('chatting', 'AI bearbetar din fråga...', 'Genererar svar baserat på transkriptet');
+  
   // Show processing
   const processingDiv = document.createElement('div');
   processingDiv.className = 'chat-message assistant';
-  processingDiv.innerHTML = '<em>Bearbetar...</em>';
+  processingDiv.innerHTML = '<div class="loading-indicator"><div class="loading-spinner"></div>Bearbetar med AI...</div>';
   $('#chatMessages').appendChild(processingDiv);
   
   try {
@@ -388,22 +584,37 @@ VIKTIGT: Fyll i mallen baserat på transkriptet och instruktionerna som följer.
       formData.append('model', settings.llmModel);
       formData.append('temperature', settings.llmTemperature);
       
-      const response = await fetch('index.php', {
+      const response = await safeFetch('index.php', {
         method: 'POST',
         body: formData
-      });
+      }, 'LLM Chat');
       
-      const result = await response.json();
+      const result = await safeJsonParse(response, 'LLM Chat');
       
       if (!result.ok) {
         console.error('LLM chat error details:', result);
         
         // Handle rate limit specifically
         if (result.status === 429) {
-          throw new Error('Rate limit nådd för LLM. Försök igen om några minuter.');
+          const errorMsg = 'Rate limit nådd för LLM. Försök igen om några minuter.';
+          const details = {
+            status: result.status,
+            error: result.error,
+            raw: result.raw
+          };
+          const error = new Error(errorMsg);
+          error.details = details;
+          throw error;
         }
         
-        throw new Error(result.error || 'LLM-fel');
+        const errorMsg = result.error || 'LLM-fel';
+        const details = {
+          status: result.status,
+          raw: result.raw
+        };
+        const error = new Error(errorMsg);
+        error.details = details;
+        throw error;
       }
       
       return result;
@@ -458,14 +669,20 @@ VIKTIGT: Fyll i mallen baserat på transkriptet och instruktionerna som följer.
   } catch (error) {
     processingDiv.remove();
     addChatMessage(`<strong>Fel:</strong> ${error.message}`, 'system');
-    console.error('Chat error:', error);
+    handleError(error.message, error.details || error, true);
+  } finally {
+    // Hide AI processing indicator
+    hideAIProcessingIndicator();
   }
 }
 
 // Modal management
 function openSettingsModal() {
-  $('#settingsModal').style.display = 'block';
-  updateSettingsUI();
+  const settingsModal = $('#settingsModal');
+  if (settingsModal) {
+    settingsModal.style.display = 'block';
+    updateSettingsUI();
+  }
 }
 
 function closeSettingsModal() {
@@ -537,14 +754,20 @@ async function openAgendaModal() {
     agendaContent.innerHTML = renderMarkdown(agendaText);
   }
   
-  $('#agendaModal').style.display = 'block';
+  const agendaModal = $('#agendaModal');
+  if (agendaModal) {
+    agendaModal.style.display = 'block';
+  }
   
   // Render mermaid diagrams if any
   await renderMermaidDiagrams(agendaContent);
 }
 
 function closeAgendaModal() {
-  $('#agendaModal').style.display = 'none';
+  const agendaModal = $('#agendaModal');
+  if (agendaModal) {
+    agendaModal.style.display = 'none';
+  }
 }
 
 // Close preview modal
@@ -631,8 +854,8 @@ async function loadTemplate(templateName) {
     updateStepIndicators();
     
   } catch (error) {
-    toast(`Fel vid laddning av mall: ${error.message}`, 'error');
-    console.error('Template loading error:', error);
+    const errorMsg = `Fel vid laddning av mall: ${error.message}`;
+    handleError(errorMsg, error, true);
   }
 }
 
@@ -762,21 +985,38 @@ async function transcribeFile(path, filename) {
       formData.append('lang', lang);
       formData.append('append', 'true'); // Append to existing transcript
       
-      const response = await fetch('index.php', {
+      const response = await safeFetch('index.php', {
         method: 'POST',
         body: formData
-      });
+      }, `Transkribering av ${filename}`);
       
-      const result = await response.json();
+      const result = await safeJsonParse(response, `Transkribering av ${filename}`);
       
       if (!result.ok) {
         console.error('Transcription error details:', result);
         
         if (result.status === 429) {
-          throw new Error('Rate limit nådd. Försök igen om några minuter.');
+          const errorMsg = 'Rate limit nådd. Försök igen om några minuter.';
+          const details = {
+            status: result.status,
+            error: result.error,
+            raw: result.raw,
+            filename: filename
+          };
+          const error = new Error(errorMsg);
+          error.details = details;
+          throw error;
         }
         
-        throw new Error(result.error || 'Transkriberingsfel');
+        const errorMsg = result.error || 'Transkriberingsfel';
+        const details = {
+          status: result.status,
+          raw: result.raw,
+          filename: filename
+        };
+        const error = new Error(errorMsg);
+        error.details = details;
+        throw error;
       }
       
       return result;
@@ -798,8 +1038,8 @@ async function transcribeFile(path, filename) {
     button.classList.remove('primary');
     
   } catch (error) {
-    toast(error.message || 'Transkriberingsfel', 'error');
-    console.error('Transcription error:', error);
+    const errorMsg = error.message || 'Transkriberingsfel';
+    handleError(errorMsg, error.details || error, true);
     button.textContent = originalText;
     button.disabled = false;
   }
@@ -907,9 +1147,13 @@ function updateFileInfo(uploadResult, file) {
   console.log('- MIME:', uploadResult.mime);
   console.log('- Size:', formatFileSize(file.size));
   
-  $('#uploadInfo').style.display = 'none';
-  $('#fileInfo').style.display = 'block';
-  $('#audioActions').style.display = 'block';
+  const uploadInfo = $('#uploadInfo');
+  const fileInfo = $('#fileInfo');
+  const audioActions = $('#audioActions');
+  
+  if (uploadInfo) uploadInfo.style.display = 'none';
+  if (fileInfo) fileInfo.style.display = 'block';
+  if (audioActions) audioActions.style.display = 'block';
   
   $('#fileName').textContent = uploadResult.filename;
   $('#fileSize').textContent = formatFileSize(file.size);
@@ -1345,7 +1589,8 @@ function loadMeetingState(meetingId) {
       }
     })
     .catch(error => {
-      console.error('Error loading meeting state:', error);
+      const errorMsg = 'Error loading meeting state: ' + error.message;
+      handleError(errorMsg, error, false); // Don't show modal for this, just log
       return false;
     });
 }
@@ -1373,12 +1618,19 @@ function updateUIFromState() {
   
   // Update uploaded file info
   if (state.uploaded) {
-    $('#uploadInfo').style.display = 'none';
-    $('#fileInfo').style.display = 'block';
-    $('#audioActions').style.display = 'block';
-    $('#fileName').textContent = state.uploaded.filename;
-    $('#fileSize').textContent = state.uploaded.mime;
-    $('#fileType').textContent = state.uploaded.mime;
+    const uploadInfo = $('#uploadInfo');
+    const fileInfo = $('#fileInfo');
+    const audioActions = $('#audioActions');
+    const fileName = $('#fileName');
+    const fileSize = $('#fileSize');
+    
+    if (uploadInfo) uploadInfo.style.display = 'none';
+    if (fileInfo) fileInfo.style.display = 'block';
+    if (audioActions) audioActions.style.display = 'block';
+    if (fileName) fileName.textContent = state.uploaded.filename;
+    if (fileSize) fileSize.textContent = state.uploaded.mime;
+    const fileType = $('#fileType');
+    if (fileType) fileType.textContent = state.uploaded.mime;
   }
   
   // Update current step
@@ -1627,8 +1879,12 @@ async function transcribe() {
   const originalText = button.textContent;
   
   try {
-    button.textContent = 'Transkriberar...';
+    // Show loading state
+    button.classList.add('loading');
     button.disabled = true;
+    
+    // Show AI processing indicator
+    showAIProcessingIndicator('transcribing', 'Transkriberar ljudfil...', 'Detta kan ta några minuter beroende på filstorlek');
     
     const result = await retryWithBackoff(async () => {
       const formData = new FormData();
@@ -1637,22 +1893,37 @@ async function transcribe() {
       formData.append('path', state.uploaded.path);
       formData.append('lang', $('#transcriptLang').value || 'sv');
       
-      const response = await fetch('index.php', {
+      const response = await safeFetch('index.php', {
         method: 'POST',
         body: formData
-      });
+      }, 'Transkribering');
       
-      const result = await response.json();
+      const result = await safeJsonParse(response, 'Transkribering');
       
       if (!result.ok) {
         console.error('Transcription error details:', result);
         
         // Handle rate limit specifically
         if (result.status === 429) {
-          throw new Error('Rate limit nådd. Försök igen om några minuter.');
+          const errorMsg = 'Rate limit nådd. Försök igen om några minuter.';
+          const details = {
+            status: result.status,
+            error: result.error,
+            raw: result.raw
+          };
+          const error = new Error(errorMsg);
+          error.details = details;
+          throw error;
         }
         
-        throw new Error(result.error || 'Transkriberingsfel');
+        const errorMsg = result.error || 'Transkriberingsfel';
+        const details = {
+          status: result.status,
+          raw: result.raw
+        };
+        const error = new Error(errorMsg);
+        error.details = details;
+        throw error;
       }
       
       return result;
@@ -1670,11 +1941,16 @@ async function transcribe() {
     updateStepIndicators();
     
   } catch (error) {
-    toast(error.message || 'Transkriberingsfel', 'error');
-    console.error('Transcription error:', error);
+    const errorMsg = error.message || 'Transkriberingsfel';
+    handleError(errorMsg, error.details || error, true);
   } finally {
+    // Hide loading state
+    button.classList.remove('loading');
     button.textContent = originalText;
     button.disabled = false;
+    
+    // Hide AI processing indicator
+    hideAIProcessingIndicator();
   }
 }
 
@@ -1745,12 +2021,12 @@ async function updateFilledPreview(text) {
   
   if (text.trim()) {
     preview.innerHTML = renderMarkdown(text);
-    preview.style.display = 'block';
+    if (preview) preview.style.display = 'block';
     
     // Render mermaid diagrams if any
     await renderMermaidDiagrams(preview);
   } else {
-    preview.style.display = 'none';
+    if (preview) preview.style.display = 'none';
   }
 }
 
@@ -1894,7 +2170,8 @@ function loadMeetings() {
       }
     })
     .catch(error => {
-      console.error('Error loading meetings:', error);
+      const errorMsg = 'Fel vid laddning av möten: ' + error.message;
+      handleError(errorMsg, error, false); // Don't show modal for this
       meetingList.innerHTML = '<div class="no-meetings"><h4>Fel vid laddning</h4><p>Kunde inte ladda möten. Försök igen.</p></div>';
     });
 }
@@ -1973,14 +2250,30 @@ function displayMeetings(meetings) {
   meetingList.querySelectorAll('.meeting-item').forEach(item => {
     item.addEventListener('click', () => {
       const meetingId = item.dataset.meetingId;
-      if (meetingId && meetingId !== currentMeetingId) {
+      if (meetingId && meetingId.trim() !== '' && meetingId !== currentMeetingId) {
         switchToMeeting(meetingId);
+      } else if (!meetingId || meetingId.trim() === '') {
+        const errorMsg = 'Ogiltigt mötes-ID i möteslista';
+        handleError(errorMsg, {meetingId: meetingId}, true);
       }
     });
   });
 }
 
 function switchToMeeting(meetingId) {
+  if (!meetingId || meetingId.trim() === '') {
+    const errorMsg = 'Ogiltigt mötes-ID för byte';
+    handleError(errorMsg, {meetingId: meetingId}, true);
+    return;
+  }
+  
+  // Validate meeting ID format
+  if (!/^[a-zA-Z0-9_-]+$/.test(meetingId)) {
+    const errorMsg = 'Ogiltigt mötes-ID format för byte';
+    handleError(errorMsg, {meetingId: meetingId}, true);
+    return;
+  }
+  
   // Update URL with meeting parameter
   const url = new URL(window.location);
   url.searchParams.set('meeting', meetingId);
@@ -2379,9 +2672,40 @@ document.addEventListener('DOMContentLoaded', () => {
       updateStepIndicators();
       
     } catch (error) {
-      toast(error.message || 'Fel vid omgenerering', 'error');
-      console.error('Regenerate error:', error);
+      handleError(error.message || 'Fel vid omgenerering', error, true);
     }
     };
   }
+  
+  // Error modal event listeners
+  $('#closeErrorModal').addEventListener('click', hideErrorModal);
+  $('#closeErrorBtn').addEventListener('click', hideErrorModal);
+  
+  $('#copyErrorBtn').addEventListener('click', () => {
+    const errorMessage = $('#errorMessage').textContent;
+    const errorDetails = $('#errorDetails').textContent;
+    const errorText = `Fel: ${errorMessage}\n\nDetaljer:\n${errorDetails}`;
+    
+    navigator.clipboard.writeText(errorText).then(() => {
+      toast('Fel kopierat till urklipp', 'success');
+    }).catch(() => {
+      toast('Kunde inte kopiera fel', 'error');
+    });
+  });
+  
+  $('#viewErrorLogBtn').addEventListener('click', () => {
+    if (state.meetingId) {
+      const errorLogUrl = `index.php?action=download_error_log&meetingId=${state.meetingId}`;
+      window.open(errorLogUrl, '_blank');
+    } else {
+      toast('Inget aktivt möte', 'error');
+    }
+  });
+  
+  // Close error modal when clicking outside
+  $('#errorModal').addEventListener('click', (e) => {
+    if (e.target === $('#errorModal')) {
+      hideErrorModal();
+    }
+  });
 });

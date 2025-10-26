@@ -27,6 +27,9 @@ En modern mötesassistent byggd i PHP som hjälper dig att automatisera mötesdo
 - **🌓 Dark/Light mode** - Automatisk tema-växling med sparad preferens
 - **♿ Tillgänglighet** - ARIA-labels, tangentbordsnavigering och hög kontrast
 - **⚙️ Centraliserade inställningar** - Hantera API-nycklar och parametrar via .env-fil
+- **🔔 Förbättrad felhantering** - Detaljerade felmeddelanden med felmodaler och toast-notifikationer
+- **⏳ Loading indicators** - Tydliga visuella indikatorer för AI-operationer (transkribering och chat)
+- **🎯 Diskreta focus outlines** - Förbättrad tillgänglighet med subtila fokus-stilar
 
 ## 🎨 Design
 
@@ -106,6 +109,7 @@ Alla möten sparas i `data/meetings/` mappen med unika ID:n eller egna namn. Var
 - `transcript.txt` - Aktuell transkribering (redigerbar)
 - `filled.md` - AI-ifylld mall
 - `chat_dialog.json` - Chat-konversation med AI
+- `error.txt` - Fel-logg med detaljerade felmeddelanden för debugging
 - `audio/` - Alla uppladdade ljudfiler
 - `versions/` - Backup av tidigare versioner av transkript och ifyllda mallar
 
@@ -118,6 +122,7 @@ data/meetings/
 │   ├── transcript.txt
 │   ├── filled.md
 │   ├── chat_dialog.json
+│   ├── error.txt
 │   ├── audio/
 │   │   ├── audio_20251016_120000_abc.mp3
 │   │   └── audio_20251016_130000_def.wav
@@ -178,6 +183,7 @@ motesassistent/
    - **Markdown** - Exportera ifylld mall som .md-fil
    - **ZIP** - Ladda ner komplett mötespaket med alla filer och undermappar
    - **Word** - Exportera som .doc för kompatibilitet med MS Word
+   - **Fel-logg** - Ladda ner `error.txt` för debugging och felanalys
 
 ### Möteshanterare
 
@@ -215,6 +221,32 @@ OpenAI Whisper stöder:
 - Separera långa möten i flera kortare filer för bättre hantering
 - Namnge filer beskrivande (t.ex. "agenda-genomgang.mp3", "diskussion.mp3")
 
+## 🔔 Felhantering och debugging
+
+### Felmodal-system
+- **Detaljerade felmeddelanden** - Klicka på felmeddelanden för att se fullständig information
+- **Fel-loggning** - Alla fel loggas automatiskt till `error.txt` i mötesmappen
+- **Kopiera fel** - Använd "Kopiera fel"-knappen för att dela felinformation
+- **Visa fel-logg** - Ladda ner komplett felhistorik för debugging
+
+### Toast-notifikationer
+- **Fel** - Röd bakgrund, visas i 8 sekunder
+- **Varning** - Gul bakgrund, visas i 6 sekunder  
+- **Framgång** - Grön bakgrund, visas i 4 sekunder
+- **Klick för att stänga** - Klicka på toast-meddelanden för att stänga dem
+
+### Loading indicators
+- **AI-transkribering** - Visar mikrofon-ikon och "Transkriberar ljudfil..."
+- **AI-chat** - Visar robot-ikon och "AI bearbetar din fråga..."
+- **Knappar** - Loading-spinner i knappar under operationer
+- **Progress bars** - Animerade progress bars för långa operationer
+
+### Automatisk felhantering
+- **HTML-svar detektering** - Upptäcker när servern returnerar HTML istället för JSON
+- **Nätverksfel** - Hanterar anslutningsproblem och timeouts
+- **Rate limits** - Automatisk retry med exponential backoff
+- **JSON-parsing** - Säker hantering av ogiltiga JSON-svar
+
 ## 🛠 Teknisk information
 
 ### Backend
@@ -233,7 +265,9 @@ OpenAI Whisper stöder:
 - **OpenAI Whisper** för transkribering
 - **OpenAI GPT** för mallfyllning
 - **Retry-logik** med exponential backoff för rate limits
-- **Felhantering** för API-fel och nätverksproblem
+- **Omfattande felhantering** för API-fel, nätverksproblem och JSON-parsing
+- **HTML-svar detektering** - Upptäcker timeouts och serverfel
+- **Säker JSON-parsing** med detaljerad felinformation
 
 ### Markdown-rendering
 - **marked.js** för Markdown-parsing
@@ -262,6 +296,7 @@ OpenAI Whisper stöder:
 1. **"API error (status: 429)"** - Rate limit nådd
    - **Lösning**: Vänta några minuter eller kontrollera din OpenAI-användning
    - Systemet försöker automatiskt igen med exponential backoff
+   - **Felmodal**: Visar detaljerad information om rate limit-fel
 
 2. **"Invalid file format"** - Ljudfil stöds inte
    - **Lösning**: Konvertera till MP3, WAV eller WebM
@@ -270,14 +305,31 @@ OpenAI Whisper stöder:
 3. **"Transcription failed"** - API-anrop misslyckades
    - **Lösning**: Kontrollera API-nycklar i .env-filen
    - Aktivera MOCK_MODE för att testa utan API-nycklar
+   - **Felmodal**: Visar fullständig felinformation och råd
 
-4. **"Invalid Date" i Möteshanteraren** - Datumformat-problem
+4. **"HTML-svar istället för JSON"** - Timeout eller serverfel
+   - **Lösning**: Kontrollera internetanslutning och försök igen
+   - Systemet upptäcker automatiskt HTML-svar och visar detaljerad information
+   - **Felmodal**: Visar svarstext och status-kod
+
+5. **"Cannot read properties of null"** - JavaScript-fel
+   - **Lösning**: Ladda om sidan, detta borde inte hända längre
+   - Systemet har nu omfattande null-kontroller för alla DOM-element
+
+6. **"Invalid Date" i Möteshanteraren** - Datumformat-problem
    - **Lösning**: Fixa genom att uppdatera meeting_state.json med korrekta timestamps
    - Borde inte hända i nya möten
 
-5. **Transkript försvinner** - Glömt spara
+7. **Transkript försvinner** - Glömt spara
    - **Lösning**: Klicka "💾 Spara redigering" eller byt steg för auto-sparning
    - System sparar automatiskt när du navigerar
+
+### Felhantering och debugging
+
+- **Felmodal**: Klicka på felmeddelanden för att se detaljerad information
+- **Fel-logg**: Ladda ner `error.txt` från mötesmappen för fullständig felhistorik
+- **Toast-notifikationer**: Korta felmeddelanden som visas i 8 sekunder (fel), 6 sekunder (varning), 4 sekunder (framgång)
+- **Kopiera fel**: Använd "Kopiera fel"-knappen i felmodalen för att dela felinformation
 
 ### Debug-läge
 
@@ -294,6 +346,12 @@ Aktivera debug-läge genom att sätta `MOCK_MODE=true` i .env för att testa uta
 - [x] **Rekursiv ZIP-export** - Alla filer och undermappar inkluderas
 - [x] **Auto-sparning** - Sparar automatiskt när du byter steg
 - [x] **Rensa transkript** - Börja om från början med en knapptryckning
+- [x] **Omfattande felhantering** - Detaljerade felmodaler med fullständig felinformation
+- [x] **Fel-loggning** - Automatisk loggning av alla fel till `error.txt` per möte
+- [x] **Loading indicators** - Tydliga visuella indikatorer för AI-operationer
+- [x] **Säker JSON-parsing** - Hantering av HTML-svar, timeouts och nätverksfel
+- [x] **Förbättrad tillgänglighet** - Diskreta focus outlines och bättre tangentbordsnavigering
+- [x] **Toast-notifikationer** - Förbättrade meddelanden med olika typer och längre visningstid
 
 ## 📋 Planerade förbättringar
 
@@ -318,6 +376,13 @@ Aktivera debug-läge genom att sätta `MOCK_MODE=true` i .env för att testa uta
 ### 🐛 Kända buggar
 - [ ] **Favicon** - Röda inspelningsikon försvinner inte alltid efter inspelning
 - [ ] **Performance** - Optimering för möten med många stora ljudfiler
+
+### ✅ Nyligen fixade buggar
+- [x] **"Cannot read properties of null"** - Omfattande null-kontroller för alla DOM-element
+- [x] **HTML-svar vid timeout** - Automatisk detektering och hantering av icke-JSON svar
+- [x] **Felmeddelanden för små** - Förbättrade toast-notifikationer med längre visningstid
+- [x] **Focus outlines för störande** - Diskreta och tillgängliga fokus-stilar
+- [x] **Saknade loading indicators** - Tydliga visuella indikatorer för AI-operationer
 
 ## 🤝 Bidrag
 

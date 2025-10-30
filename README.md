@@ -53,8 +53,16 @@ Använder Göteborgs färgschema med modern, responsiv design och förbättrad a
 
 2. **Kopiera konfigurationsfilen:**
    ```bash
-   cp env.example .env
+   # For local development
+   cp config/env.example .env
+   
+   # For OpenShift (mount as persistent volume)
+   cp config/env.example /config/.env
    ```
+   
+   **Viktigt:** Systemet söker efter `.env` i följande ordning:
+   1. `/config/.env` - För OpenShift persistent storage
+   2. `/.env` - För lokal utveckling (project root)
 
 3. **Konfigurera API-nycklar (valfritt för demo):**
    Redigera `.env` och lägg till dina OpenAI API-nycklar:
@@ -69,6 +77,11 @@ Använder Göteborgs färgschema med modern, responsiv design och förbättrad a
    
    # Models
    WHISPER_MODEL=whisper-1
+   
+   # Timeout Configuration (important for OpenShift!)
+   PHP_MAX_EXECUTION_TIME=600
+   CURL_TIMEOUT=600
+   CURL_CONNECT_TIMEOUT=60
    
    # Mock mode for testing without API keys
    MOCK_MODE=false
@@ -88,6 +101,28 @@ Använder Göteborgs färgschema med modern, responsiv design och förbättrad a
    http://localhost:8080
    ```
 
+### OpenShift installation
+
+För OpenShift-miljö:
+
+1. **Mount persistent storage för konfiguration:**
+   ```yaml
+   - name: config-volume
+     mountPath: /config
+     persistentVolumeClaim:
+       claimName: wizard-config
+   ```
+
+2. **Kopiera konfigurationsfilen till persistent volume:**
+   ```bash
+   # In pod
+   cp config/env.example /config/.env
+   ```
+
+3. **Redigera /config/.env med dina API-nycklar**
+
+Systemet söker automatiskt efter `/config/.env` först, sedan fallback till `/.env` för kompatibilitet.
+
 ## 🔧 Konfiguration
 
 ### API-nycklar
@@ -98,6 +133,16 @@ Använder Göteborgs färgschema med modern, responsiv design och förbättrad a
 
 ### Modeller
 - **WHISPER_MODEL**: Whisper-modell för transkribering (standard: whisper-1)
+
+### Timeout-konfiguration (för OpenShift och långvariga uppgifter)
+- **PHP_MAX_EXECUTION_TIME**: PHP max execution time i sekunder (standard: 600, 0 = obegränsat)
+- **CURL_TIMEOUT**: CURL timeout för API-anrop i sekunder (standard: 600)
+- **CURL_CONNECT_TIMEOUT**: CURL connection timeout i sekunder (standard: 60)
+
+**Tips för OpenShift:**
+- Öka timeout-värdena om du får timeout-problem med stora ljudfiler
+- Rekommenderade värden för OpenShift: PHP_MAX_EXECUTION_TIME=600, CURL_TIMEOUT=600
+- Kontrollera även att OpenShift/PHP-inställningarna tillåter längre körningstider
 
 ### Mock-läge
 Sätt `MOCK_MODE=true` i `.env` för att köra utan API-nycklar (demo-läge med exempeldata).
@@ -324,6 +369,29 @@ OpenAI Whisper stöder:
    - **Lösning**: Klicka "💾 Spara redigering" eller byt steg för auto-sparning
    - System sparar automatiskt när du navigerar
 
+8. **Timeout-problem i OpenShift** - Request timeout eller script timeout
+   - **Lösning**: Öka timeout-värdena i `.env`-filen
+   - Sätt `PHP_MAX_EXECUTION_TIME=600` för att öka PHP execution time till 10 minuter
+   - Sätt `CURL_TIMEOUT=600` för att öka CURL timeout för API-anrop till 10 minuter
+   - Sätt `CURL_CONNECT_TIMEOUT=60` för att öka connection timeout till 1 minut
+   - Sätt `IGNORE_USER_ABORT=true` för att förhindra att anslutningen stängs vid timeout
+   - **Felmodal**: Visar detaljerad information om timeout-fel
+   - **Loggning**: Timeout-värden loggas vid startup för debugging
+   - **Gateway timeout (504)**: Kontrollera att OpenShift ingress timeout är minst lika hög som CURL_TIMEOUT
+
+8a. **504 Gateway Timeout** - Ingress/gateway timeout innan PHP är klar
+   - **Lösning**: Systemet använder nu `Connection: keep-alive` och `X-Accel-Buffering: no` headers
+   - Kontrollera OpenShift ingress timeout-konfiguration (ska vara >= CURL_TIMEOUT)
+   - Öka timeouts i OpenShift ingress/proxy-inställningar
+   - Verifiera att `IGNORE_USER_ABORT=true` är satt
+
+9. **ZIP-export fungerar inte i OpenShift** - Korrupt ZIP-fil eller tom fil
+   - **Lösning**: Systemet använder nu förbättrad metod med `addFromString()` istället för `addFile()`
+   - **Felhantering**: Automatisk fallback till `data/tmp/` om systemtemp-mappen inte är skrivbar
+   - **Loggning**: Detaljerade felmeddelanden loggas i `error.txt` per möte
+   - **Kontroll**: Verifierar att ZIP-filen har innehåll innan nedladdning
+   - Systemet loggar varje fil som läggs till i ZIP:en för enkel debugging
+
 ### Felhantering och debugging
 
 - **Felmodal**: Klicka på felmeddelanden för att se detaljerad information
@@ -343,7 +411,7 @@ Aktivera debug-läge genom att sätta `MOCK_MODE=true` i .env för att testa uta
 - [x] **Namnbyte på möten** - Byt namn på både mapp och mötes-ID
 - [x] **Automatisk sammanslagning** - Flera transkriptioner kombineras automatiskt
 - [x] **Backup-system** - Automatiska versioner av transkript och ifyllda mallar
-- [x] **Rekursiv ZIP-export** - Alla filer och undermappar inkluderas
+- [x] **Rekursiv ZIP-export** - Alla filer och undermappar inkluderas (OpenShift-kompatibel)
 - [x] **Auto-sparning** - Sparar automatiskt när du byter steg
 - [x] **Rensa transkript** - Börja om från början med en knapptryckning
 - [x] **Omfattande felhantering** - Detaljerade felmodaler med fullständig felinformation

@@ -2,11 +2,17 @@
 .env
 .env.local
 .env.production
+# OpenShift persistent storage config folder
+/config/.env
+/config/*
+# But keep the example file
+!config/env.example
 
 # Sensitive data
 data/meetings/
 data/uploads/
 data/temp/
+data/tmp/
 
 # Log files
 *.log

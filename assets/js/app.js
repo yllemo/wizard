@@ -973,6 +973,10 @@ async function transcribeFile(path, filename) {
   try {
     button.textContent = 'Transkriberar...';
     button.disabled = true;
+    button.classList.add('loading');
+    
+    // Show AI processing indicator
+    showAIProcessingIndicator('transcribing', `Transkriberar ${filename}...`, 'Detta kan ta några minuter beroende på filstorlek');
     
     const lang = $('#transcriptLang')?.value || 'sv';
     
@@ -1036,12 +1040,17 @@ async function transcribeFile(path, filename) {
     // Mark file as transcribed
     button.textContent = '✅ Klar';
     button.classList.remove('primary');
+    button.classList.remove('loading');
     
   } catch (error) {
     const errorMsg = error.message || 'Transkriberingsfel';
     handleError(errorMsg, error.details || error, true);
     button.textContent = originalText;
     button.disabled = false;
+    button.classList.remove('loading');
+  } finally {
+    // Hide AI processing indicator
+    hideAIProcessingIndicator();
   }
 }
 
@@ -1601,7 +1610,7 @@ function updateUIFromState() {
   const agendaTextarea = $('#agendaText');
   if (agendaTextarea && state.agenda) {
     agendaTextarea.value = state.agenda;
-    updateAgendaPreview();
+    updateAgendaPreview(state.agenda);
   }
   
   // Update transcript
@@ -1837,6 +1846,13 @@ async function importAgenda(e) {
 // Update agenda preview with markdown rendering
 async function updateAgendaPreview(text) {
   const preview = $('#agendaPreview');
+  if (!preview) return; // Exit if preview element doesn't exist
+  
+  // Handle undefined or null text
+  if (!text) {
+    text = '';
+  }
+  
   if (text.trim()) {
     // Show full agenda (both sections) on step 1
     preview.innerHTML = renderMarkdown(text);

@@ -5,22 +5,65 @@ session_start();
 function env_get(string $k, ?string $d=null): ?string{
   static $env=null;
   if($env===null){
-    $env=[]; $f=__DIR__.'/.env';
-    if(file_exists($f)){
-      foreach(file($f, FILE_IGNORE_NEW_LINES|FILE_SKIP_EMPTY_LINES) as $line){
+    $env=[];
+    // Try /config/.env first (for OpenShift persistent storage), then fallback to .env in root
+    $envFile = '/config/.env';
+    if(!file_exists($envFile)) {
+      $envFile = __DIR__.'/.env';
+    }
+    if(file_exists($envFile)){
+      foreach(file($envFile, FILE_IGNORE_NEW_LINES|FILE_SKIP_EMPTY_LINES) as $line){
         if(str_starts_with(trim($line),'#')) continue;
         $p=explode('=',$line,2); if(count($p)===2){ $env[trim($p[0])] = trim($p[1]); }
       }
+      error_log("Loaded .env from: $envFile (found " . count($env) . " variables)");
+      
+      // Debug: Log critical keys to verify they're loaded
+      $debugKeys = ['OPENAI_API_KEY', 'LLM_API_KEY', 'MOCK_MODE'];
+      foreach($debugKeys as $debugKey) {
+        if(isset($env[$debugKey])) {
+          $hasValue = !empty($env[$debugKey]);
+          error_log("  $debugKey: " . ($hasValue ? 'HAS VALUE' : 'EMPTY'));
+        } else {
+          error_log("  $debugKey: NOT SET");
+        }
+      }
+    } else {
+      error_log("No .env file found in /config/.env or " . __DIR__ . '/.env');
     }
   }
+  
+  // Priority: $env array (from .env file) > $_ENV > $_SERVER
+  // We want .env file to take precedence over system environment variables
+  if(isset($env[$k])) return $env[$k];
   if(isset($_ENV[$k])) return $_ENV[$k];
   if(isset($_SERVER[$k])) return $_SERVER[$k];
-  return $env[$k] ?? $d;
+  return $d;
 }
 function env_bool(string $k, bool $d=false): bool{ $v=env_get($k); if($v===null) return $d; return in_array(strtolower($v),['1','true','yes','on'],true); }
+function env_int(string $k, int $d=0): int{ $v=env_get($k); if($v===null) return $d; return (int)$v; }
+
+// Set PHP max execution time from .env if configured
+$maxExecTime = env_get('PHP_MAX_EXECUTION_TIME');
+if ($maxExecTime !== null && $maxExecTime !== '0') {
+  set_time_limit((int)$maxExecTime);
+  error_log("Set PHP max_execution_time to: " . $maxExecTime);
+}
+
+// Enable ignore_user_abort for OpenShift to prevent connection closure
+if (env_bool('IGNORE_USER_ABORT', true)) {
+  ignore_user_abort(true);
+}
 function storage_path(): string{ $p=rtrim(env_get('STORAGE_PATH','data'),'/'); if(!is_dir($p)) mkdir($p,0775,true); if(!is_dir("$p/meetings")) mkdir("$p/meetings",0775,true); return $p; }
 function meeting_dir(string $id): string{ $b=storage_path()."/meetings/$id"; if(!is_dir($b)) mkdir($b,0775,true); if(!is_dir("$b/audio")) mkdir("$b/audio",0775,true); if(!is_dir("$b/versions")) mkdir("$b/versions",0775,true); return $b; }
-function json_out(array $p, int $s=200){ http_response_code($s); header('Content-Type: application/json; charset=utf-8'); echo json_encode($p, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES); exit; }
+function json_out(array $p, int $s=200){ 
+  http_response_code($s); 
+  header('Content-Type: application/json; charset=utf-8');
+  header('Connection: keep-alive'); // Prevent gateway timeout
+  header('X-Accel-Buffering: no'); // Disable nginx buffering
+  echo json_encode($p, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES); 
+  exit; 
+}
 
 // Error logging functions
 function logError($meetingId, $error, $context = []) {
@@ -364,6 +407,11 @@ if($action==='upload'){
 if($action==='transcribe'){
   if($_SERVER['REQUEST_METHOD']!=='POST') json_out(['ok'=>false,'error'=>'Method not allowed'],405);
   
+  // Enable output buffering and disable time limits for long-running operations
+  if(ob_get_level() == 0) {
+    ob_start();
+  }
+  
   $meetingId=$_POST['meetingId']??null; 
   $path=$_POST['path']??null; 
   $lang=$_POST['lang']??env_get('WHISPER_LANGUAGE','sv');
@@ -379,12 +427,15 @@ if($action==='transcribe'){
   error_log("Transcription request: meetingId=$meetingId, path=$path, lang=$lang");
   error_log("API settings: key=" . ($apiKey ? 'SET' : 'NOT SET') . ", url=$apiUrl, model=$model");
   
-  // Check if .env file exists
-  if (!file_exists(__DIR__ . '/.env')) {
+  // Check if .env file exists (in /config for OpenShift or root)
+  if (!file_exists('/config/.env') && !file_exists(__DIR__ . '/.env')) {
     error_log("No .env file found, using mock mode");
     $mock = true;
   } else {
     $mock = env_bool('MOCK_MODE',false) || !$apiKey;
+    if($mock) {
+      error_log("Mock mode triggered - MOCK_MODE=" . env_get('MOCK_MODE', 'NOT SET') . ", API key exists=" . ($apiKey ? 'YES' : 'NO'));
+    }
   }
   
   if($mock){ 
@@ -421,10 +472,18 @@ if($action==='transcribe'){
     }
     
     try {
+      error_log("Starting CURL to OpenAI Whisper API");
+      
       $base=rtrim($apiUrl,'/'); 
       $url=$base.'/v1/audio/transcriptions'; 
       $cfile=new CURLFile($path);
       $post=['file'=>$cfile,'model'=>$model,'language'=>$lang];
+      
+      // Get timeout settings from .env or use defaults
+      $curlTimeout = env_int('CURL_TIMEOUT', 600);
+      $curlConnectTimeout = env_int('CURL_CONNECT_TIMEOUT', 60);
+      
+      error_log("CURL settings: timeout=$curlTimeout, connect_timeout=$curlConnectTimeout");
       
       $ch=curl_init($url);
       curl_setopt_array($ch,[
@@ -432,8 +491,8 @@ if($action==='transcribe'){
         CURLOPT_POST=>true,
         CURLOPT_POSTFIELDS=>$post,
         CURLOPT_HTTPHEADER=>['Authorization: Bearer '.$apiKey],
-        CURLOPT_TIMEOUT=>300,
-        CURLOPT_CONNECTTIMEOUT=>30
+        CURLOPT_TIMEOUT=>$curlTimeout,
+        CURLOPT_CONNECTTIMEOUT=>$curlConnectTimeout
       ]);
       
       $res=curl_exec($ch); 
@@ -530,8 +589,9 @@ if($action==='llm_fill'){
   $model = env_get('LLM_MODEL', 'gpt-4o-mini');
   $temperature = floatval(env_get('LLM_TEMPERATURE', '0.2'));
   
-  // Check if .env file exists
-  if (!file_exists(__DIR__ . '/.env')) {
+  // Check if .env file exists (in /config for OpenShift or root)
+  if (!file_exists('/config/.env') && !file_exists(__DIR__ . '/.env')) {
+    error_log("No .env file found, using mock mode");
     $mock = true;
   } else {
     $mock = env_bool('MOCK_MODE',false) || !$apiKey;
@@ -546,8 +606,20 @@ if($action==='llm_fill'){
   } else {
     $base=rtrim($apiUrl,'/'); $url=$base.'/v1/chat/completions';
     $payload=['model'=>$model,'temperature'=>$temperature,'messages'=>[['role'=>'system','content'=>$systemPrompt],['role'=>'user','content'=>$taskPrompt."\n\nMALL:\n".$templateMarkdown."\n\nTRANSKRIPT:\n".$transcript]]];
+    
+    // Get timeout settings from .env or use defaults
+    $curlTimeout = env_int('CURL_TIMEOUT', 600);
+    $curlConnectTimeout = env_int('CURL_CONNECT_TIMEOUT', 60);
+    
     $ch=curl_init($url);
-    curl_setopt_array($ch,[CURLOPT_RETURNTRANSFER=>true,CURLOPT_POST=>true,CURLOPT_HTTPHEADER=>['Authorization: Bearer '.$apiKey,'Content-Type: application/json'],CURLOPT_POSTFIELDS=>json_encode($payload, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES)]);
+    curl_setopt_array($ch,[
+      CURLOPT_RETURNTRANSFER=>true,
+      CURLOPT_POST=>true,
+      CURLOPT_HTTPHEADER=>['Authorization: Bearer '.$apiKey,'Content-Type: application/json'],
+      CURLOPT_POSTFIELDS=>json_encode($payload, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES),
+      CURLOPT_TIMEOUT=>$curlTimeout,
+      CURLOPT_CONNECTTIMEOUT=>$curlConnectTimeout
+    ]);
     $res=curl_exec($ch); if($res===false){$err=curl_error($ch); curl_close($ch); json_out(['ok'=>false,'error'=>$err],500);}
     $status=curl_getinfo($ch,CURLINFO_HTTP_CODE); curl_close($ch);
     $j=json_decode($res,true); if($status>=400||!isset($j['choices'][0]['message']['content'])) json_out(['ok'=>false,'error'=>'LLM error','raw'=>$res],500);
@@ -568,8 +640,9 @@ if($action==='llm_chat'){
   $model = $_POST['model'] ?? env_get('LLM_MODEL', 'gpt-4o-mini');
   $temperature = floatval($_POST['temperature'] ?? env_get('LLM_TEMPERATURE', '0.2'));
   
-  // Check if .env file exists
-  if (!file_exists(__DIR__ . '/.env')) {
+  // Check if .env file exists (in /config for OpenShift or root)
+  if (!file_exists('/config/.env') && !file_exists(__DIR__ . '/.env')) {
+    error_log("No .env file found, using mock mode");
     $mock = true;
   } else {
     $mock = env_bool('MOCK_MODE',false) || !$apiKey;
@@ -581,8 +654,20 @@ if($action==='llm_chat'){
     $base=rtrim($apiUrl,'/'); $url=$base.'/v1/chat/completions';
     $messagesArray = json_decode($messages, true);
     $payload=['model'=>$model,'temperature'=>$temperature,'messages'=>$messagesArray];
+    
+    // Get timeout settings from .env or use defaults
+    $curlTimeout = env_int('CURL_TIMEOUT', 600);
+    $curlConnectTimeout = env_int('CURL_CONNECT_TIMEOUT', 60);
+    
     $ch=curl_init($url);
-    curl_setopt_array($ch,[CURLOPT_RETURNTRANSFER=>true,CURLOPT_POST=>true,CURLOPT_HTTPHEADER=>['Authorization: Bearer '.$apiKey,'Content-Type: application/json'],CURLOPT_POSTFIELDS=>json_encode($payload, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES)]);
+    curl_setopt_array($ch,[
+      CURLOPT_RETURNTRANSFER=>true,
+      CURLOPT_POST=>true,
+      CURLOPT_HTTPHEADER=>['Authorization: Bearer '.$apiKey,'Content-Type: application/json'],
+      CURLOPT_POSTFIELDS=>json_encode($payload, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES),
+      CURLOPT_TIMEOUT=>$curlTimeout,
+      CURLOPT_CONNECTTIMEOUT=>$curlConnectTimeout
+    ]);
     $res=curl_exec($ch); 
     if($res===false){
       $err=curl_error($ch); 
@@ -701,48 +786,119 @@ if($action==='export_all'){
   $dir=meeting_dir($meetingId);
   if(!is_dir($dir)){ http_response_code(404); echo "Meeting not found"; exit; }
   
-  // Create ZIP file
-  $zipFile = tempnam(sys_get_temp_dir(), 'export_');
-  $zip = new ZipArchive();
-  if($zip->open($zipFile, ZipArchive::CREATE) !== TRUE){
-    http_response_code(500); echo "Cannot create ZIP file"; exit;
-  }
-  
-  // Recursive function to add all files and subdirectories
-  $addDirectoryToZip = function($source, $zipPath = '') use (&$addDirectoryToZip, $zip, $dir) {
-    $iterator = new RecursiveIteratorIterator(
-      new RecursiveDirectoryIterator($source, RecursiveDirectoryIterator::SKIP_DOTS),
-      RecursiveIteratorIterator::SELF_FIRST
-    );
-    
-    foreach($iterator as $item) {
-      $itemPath = $item->getPathname();
-      $relativePath = substr($itemPath, strlen($dir) + 1);
-      
-      // Replace directory separators with forward slash for cross-platform compatibility
-      $relativePath = str_replace('\\', '/', $relativePath);
-      
-      if($item->isDir()) {
-        // Add directory to zip
-        $zip->addEmptyDir($relativePath);
-      } else {
-        // Add file to zip
-        $zip->addFile($itemPath, $relativePath);
-      }
+  try {
+    // Try to use sys_get_temp_dir first, fallback to current directory
+    $tempDir = sys_get_temp_dir();
+    if(!is_writable($tempDir)) {
+      $tempDir = __DIR__ . '/data/tmp';
+      if(!is_dir($tempDir)) mkdir($tempDir, 0755, true);
     }
-  };
-  
-  // Add all files and subdirectories from meeting directory
-  $addDirectoryToZip($dir);
-  
-  $zip->close();
-  
-  header('Content-Type: application/zip');
-  header('Content-Disposition: attachment; filename="'.$filename.'.zip"');
-  header('Content-Length: ' . filesize($zipFile));
-  readfile($zipFile);
-  unlink($zipFile);
-  exit;
+    
+    $zipFile = tempnam($tempDir, 'export_');
+    
+    $zip = new ZipArchive();
+    $result = $zip->open($zipFile, ZipArchive::CREATE | ZipArchive::OVERWRITE);
+    
+    if($result !== TRUE){
+      $errorMsg = "Cannot create ZIP file: error code $result";
+      error_log($errorMsg);
+      logError($meetingId, $errorMsg, ['temp_dir' => $tempDir, 'zip_file' => $zipFile]);
+      http_response_code(500); echo "Cannot create ZIP file"; exit;
+    }
+    
+    error_log("ZIP file created successfully at: $zipFile");
+    
+    // Recursive function to add all files and subdirectories
+    $addDirectoryToZip = function($source, $zipPath = '') use (&$addDirectoryToZip, $zip, $dir, $meetingId) {
+      $iterator = new RecursiveIteratorIterator(
+        new RecursiveDirectoryIterator($source, RecursiveDirectoryIterator::SKIP_DOTS),
+        RecursiveIteratorIterator::SELF_FIRST
+      );
+      
+      foreach($iterator as $item) {
+        $itemPath = $item->getPathname();
+        $relativePath = substr($itemPath, strlen($dir) + 1);
+        
+        // Replace directory separators with forward slash for cross-platform compatibility
+        $relativePath = str_replace('\\', '/', $relativePath);
+        
+        try {
+          if($item->isDir()) {
+            // Add directory to zip
+            if(!$zip->addEmptyDir($relativePath)) {
+              error_log("Failed to add directory to ZIP: $relativePath");
+            }
+          } else {
+            // For OpenShift compatibility, read file content and add from string
+            $fileContent = @file_get_contents($itemPath);
+            if($fileContent === false) {
+              error_log("Failed to read file: $itemPath");
+              logError($meetingId, "Failed to read file for ZIP: $itemPath", ['path' => $itemPath]);
+              continue;
+            }
+            
+            // Add file content to zip
+            if(!$zip->addFromString($relativePath, $fileContent)) {
+              error_log("Failed to add file to ZIP: $relativePath");
+              logError($meetingId, "Failed to add file to ZIP", ['path' => $relativePath]);
+            } else {
+              error_log("Added file to ZIP: $relativePath (" . strlen($fileContent) . " bytes)");
+            }
+          }
+        } catch (Exception $e) {
+          error_log("Exception adding item to ZIP: " . $e->getMessage());
+          logError($meetingId, "Exception adding item to ZIP", [
+            'path' => $relativePath, 
+            'error' => $e->getMessage()
+          ]);
+        }
+      }
+    };
+    
+    // Add all files and subdirectories from meeting directory
+    $addDirectoryToZip($dir);
+    
+    $zip->close();
+    
+    error_log("ZIP file closed successfully, size: " . filesize($zipFile) . " bytes");
+    
+    // Check if zip file exists and has content
+    if(!file_exists($zipFile) || filesize($zipFile) === 0) {
+      error_log("ZIP file is empty or doesn't exist!");
+      logError($meetingId, "ZIP file creation failed - empty file", ['zip_file' => $zipFile]);
+      http_response_code(500); echo "ZIP file creation failed"; 
+      if(file_exists($zipFile)) unlink($zipFile);
+      exit;
+    }
+    
+    header('Content-Type: application/zip');
+    header('Content-Disposition: attachment; filename="'.$filename.'.zip"');
+    header('Content-Length: ' . filesize($zipFile));
+    
+    // Use output buffering for large files
+    ob_clean();
+    flush();
+    
+    readfile($zipFile);
+    
+    // Clean up
+    unlink($zipFile);
+    
+    error_log("ZIP export completed successfully for meeting: $meetingId");
+    exit;
+    
+  } catch (Exception $e) {
+    $errorMsg = 'ZIP export failed: ' . $e->getMessage();
+    error_log($errorMsg);
+    logError($meetingId, $errorMsg, [
+      'exception' => $e->getMessage(), 
+      'trace' => $e->getTraceAsString()
+    ]);
+    http_response_code(500); 
+    echo "ZIP export failed: " . htmlspecialchars($e->getMessage());
+    if(isset($zipFile) && file_exists($zipFile)) unlink($zipFile);
+    exit;
+  }
 }
 
 // Export as Word document (HTML format that Word can open)

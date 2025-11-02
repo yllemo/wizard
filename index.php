@@ -45,7 +45,7 @@ function env_int(string $k, int $d=0): int{ $v=env_get($k); if($v===null) return
 
 // Set PHP max execution time from .env if configured
 $maxExecTime = env_get('PHP_MAX_EXECUTION_TIME');
-if ($maxExecTime !== null && $maxExecTime !== '0') {
+if ($maxExecTime !== null) {
   set_time_limit((int)$maxExecTime);
   error_log("Set PHP max_execution_time to: " . $maxExecTime);
 }
@@ -480,7 +480,7 @@ if($action==='transcribe'){
       $post=['file'=>$cfile,'model'=>$model,'language'=>$lang];
       
       // Get timeout settings from .env or use defaults
-      $curlTimeout = env_int('CURL_TIMEOUT', 600);
+      $curlTimeout = env_int('CURL_TIMEOUT', 1800);
       $curlConnectTimeout = env_int('CURL_CONNECT_TIMEOUT', 60);
       
       error_log("CURL settings: timeout=$curlTimeout, connect_timeout=$curlConnectTimeout");
@@ -608,7 +608,7 @@ if($action==='llm_fill'){
     $payload=['model'=>$model,'temperature'=>$temperature,'messages'=>[['role'=>'system','content'=>$systemPrompt],['role'=>'user','content'=>$taskPrompt."\n\nMALL:\n".$templateMarkdown."\n\nTRANSKRIPT:\n".$transcript]]];
     
     // Get timeout settings from .env or use defaults
-    $curlTimeout = env_int('CURL_TIMEOUT', 600);
+    $curlTimeout = env_int('CURL_TIMEOUT', 1800);
     $curlConnectTimeout = env_int('CURL_CONNECT_TIMEOUT', 60);
     
     $ch=curl_init($url);
@@ -656,7 +656,7 @@ if($action==='llm_chat'){
     $payload=['model'=>$model,'temperature'=>$temperature,'messages'=>$messagesArray];
     
     // Get timeout settings from .env or use defaults
-    $curlTimeout = env_int('CURL_TIMEOUT', 600);
+    $curlTimeout = env_int('CURL_TIMEOUT', 1800);
     $curlConnectTimeout = env_int('CURL_CONNECT_TIMEOUT', 60);
     
     $ch=curl_init($url);
@@ -756,9 +756,21 @@ if($action==='download_audio'){
   
   $mimeType = mime_content_type($audioFile);
   
+  // Close session to prevent header issues
+  if(session_status() === PHP_SESSION_ACTIVE) {
+    session_write_close();
+  }
+  
+  // Clear all output buffers
+  while(ob_get_level()) {
+    ob_end_clean();
+  }
+  
   header('Content-Type: ' . $mimeType);
   header('Content-Disposition: attachment; filename="' . $filename . '"');
   header('Content-Length: ' . filesize($audioFile));
+  header('Cache-Control: no-cache, must-revalidate');
+  header('Pragma: no-cache');
   
   readfile($audioFile);
   exit;
@@ -769,11 +781,32 @@ if($action==='export'){
   if(!$meetingId){ http_response_code(400); echo "meetingId required"; exit; }
   $dir=meeting_dir($meetingId); $filled=file_exists("$dir/filled.md")?file_get_contents("$dir/filled.md"):null;
   if(!$filled){ http_response_code(404); echo "No filled document"; exit; }
-  if($format==='md'){ header('Content-Type: text/markdown; charset=utf-8'); header('Content-Disposition: attachment; filename="'.$filename.'.md"'); echo $filled; exit; }
+  
+  // Close session to prevent header issues
+  if(session_status() === PHP_SESSION_ACTIVE) {
+    session_write_close();
+  }
+  
+  // Clear all output buffers
+  while(ob_get_level()) {
+    ob_end_clean();
+  }
+  
+  if($format==='md'){ 
+    header('Content-Type: text/markdown; charset=utf-8'); 
+    header('Content-Disposition: attachment; filename="'.$filename.'.md"'); 
+    header('Cache-Control: no-cache, must-revalidate');
+    echo $filled; 
+    exit; 
+  }
   if($format==='json'){
     $lines=preg_split('/\R/',$filled); $data=[]; $current=null;
     foreach($lines as $line){ if(preg_match('/^##\s+(.*)$/',$line,$m)){ $current=trim($m[1]); $data[$current]=''; } elseif($current!==null){ $data[$current].=($data[$current]?"\n":"").$line; } }
-    header('Content-Type: application/json; charset=utf-8'); header('Content-Disposition: attachment; filename="'.$filename.'.json"'); echo json_encode($data, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES|JSON_PRETTY_PRINT); exit;
+    header('Content-Type: application/json; charset=utf-8'); 
+    header('Content-Disposition: attachment; filename="'.$filename.'.json"'); 
+    header('Cache-Control: no-cache, must-revalidate');
+    echo json_encode($data, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES|JSON_PRETTY_PRINT); 
+    exit;
   }
   http_response_code(400); echo "Unsupported format"; exit;
 }
@@ -871,18 +904,36 @@ if($action==='export_all'){
       exit;
     }
     
+    // Close session to prevent header issues on OpenShift
+    if(session_status() === PHP_SESSION_ACTIVE) {
+      session_write_close();
+    }
+    
+    // Clear all output buffers to prevent corruption
+    while(ob_get_level()) {
+      ob_end_clean();
+    }
+    
+    // Set headers for ZIP download
     header('Content-Type: application/zip');
     header('Content-Disposition: attachment; filename="'.$filename.'.zip"');
     header('Content-Length: ' . filesize($zipFile));
+    header('Cache-Control: no-cache, must-revalidate');
+    header('Pragma: no-cache');
+    header('Expires: 0');
     
-    // Use output buffering for large files
-    ob_clean();
-    flush();
+    // Flush system output buffer
+    if(function_exists('apache_setenv')) {
+      @apache_setenv('no-gzip', '1');
+    }
+    @ini_set('zlib.output_compression', '0');
+    @ini_set('implicit_flush', '1');
     
+    // Send the file
     readfile($zipFile);
     
     // Clean up
-    unlink($zipFile);
+    @unlink($zipFile);
     
     error_log("ZIP export completed successfully for meeting: $meetingId");
     exit;
@@ -994,9 +1045,20 @@ em { font-style: italic; }
   
   $html .= '</body></html>';
   
+  // Close session to prevent header issues
+  if(session_status() === PHP_SESSION_ACTIVE) {
+    session_write_close();
+  }
+  
+  // Clear all output buffers
+  while(ob_get_level()) {
+    ob_end_clean();
+  }
+  
   // Export as HTML (Word can open HTML files)
   header('Content-Type: application/vnd.ms-word; charset=utf-8');
   header('Content-Disposition: attachment; filename="'.$filename.'.doc"');
+  header('Cache-Control: no-cache, must-revalidate');
   echo $html;
   exit;
 }
@@ -1132,8 +1194,20 @@ if($action==='download_error_log'){
   
   if(file_exists($errorFile)){
     $errorLog = file_get_contents($errorFile);
+    
+    // Close session to prevent header issues
+    if(session_status() === PHP_SESSION_ACTIVE) {
+      session_write_close();
+    }
+    
+    // Clear all output buffers
+    while(ob_get_level()) {
+      ob_end_clean();
+    }
+    
     header('Content-Type: text/plain; charset=utf-8');
     header('Content-Disposition: attachment; filename="error_log_' . $meetingId . '.txt"');
+    header('Cache-Control: no-cache, must-revalidate');
     echo $errorLog;
     exit;
   } else {

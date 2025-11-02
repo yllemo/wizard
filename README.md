@@ -79,8 +79,9 @@ Använder Göteborgs färgschema med modern, responsiv design och förbättrad a
    WHISPER_MODEL=whisper-1
    
    # Timeout Configuration (important for OpenShift!)
-   PHP_MAX_EXECUTION_TIME=600
-   CURL_TIMEOUT=600
+   # Default: 1800 seconds (30 minutes) - sufficient for 1-hour audio files
+   PHP_MAX_EXECUTION_TIME=1800
+   CURL_TIMEOUT=1800
    CURL_CONNECT_TIMEOUT=60
    
    # Mock mode for testing without API keys
@@ -135,13 +136,14 @@ Systemet söker automatiskt efter `/config/.env` först, sedan fallback till `/.
 - **WHISPER_MODEL**: Whisper-modell för transkribering (standard: whisper-1)
 
 ### Timeout-konfiguration (för OpenShift och långvariga uppgifter)
-- **PHP_MAX_EXECUTION_TIME**: PHP max execution time i sekunder (standard: 600, 0 = obegränsat)
-- **CURL_TIMEOUT**: CURL timeout för API-anrop i sekunder (standard: 600)
-- **CURL_CONNECT_TIMEOUT**: CURL connection timeout i sekunder (standard: 60)
+- **PHP_MAX_EXECUTION_TIME**: PHP max execution time i sekunder (standard: 1800 = 30 minuter, 0 = obegränsat)
+- **CURL_TIMEOUT**: CURL timeout för API-anrop i sekunder (standard: 1800 = 30 minuter)
+- **CURL_CONNECT_TIMEOUT**: CURL connection timeout i sekunder (standard: 60 = 1 minut)
 
 **Tips för OpenShift:**
-- Öka timeout-värdena om du får timeout-problem med stora ljudfiler
-- Rekommenderade värden för OpenShift: PHP_MAX_EXECUTION_TIME=600, CURL_TIMEOUT=600
+- Standard timeout på 1800 sekunder (30 minuter) är tillräckligt för att transkribera 1-timmars ljudfiler
+- Öka timeout-värdena ytterligare om du arbetar med ännu längre filer (2+ timmar)
+- Rekommenderade värden för OpenShift: PHP_MAX_EXECUTION_TIME=1800, CURL_TIMEOUT=1800
 - Kontrollera även att OpenShift/PHP-inställningarna tillåter längre körningstider
 
 ### Mock-läge
@@ -370,10 +372,11 @@ OpenAI Whisper stöder:
    - System sparar automatiskt när du navigerar
 
 8. **Timeout-problem i OpenShift** - Request timeout eller script timeout
-   - **Lösning**: Öka timeout-värdena i `.env`-filen
-   - Sätt `PHP_MAX_EXECUTION_TIME=600` för att öka PHP execution time till 10 minuter
-   - Sätt `CURL_TIMEOUT=600` för att öka CURL timeout för API-anrop till 10 minuter
-   - Sätt `CURL_CONNECT_TIMEOUT=60` för att öka connection timeout till 1 minut
+   - **Lösning**: Standard timeout är 1800 sekunder (30 minuter), tillräckligt för 1-timmars ljudfiler
+   - Om du arbetar med längre filer, öka timeout-värdena i `.env`-filen:
+   - Sätt `PHP_MAX_EXECUTION_TIME=3600` för att öka PHP execution time till 60 minuter
+   - Sätt `CURL_TIMEOUT=3600` för att öka CURL timeout för API-anrop till 60 minuter
+   - Sätt `CURL_CONNECT_TIMEOUT=60` för connection timeout (1 minut är oftast tillräckligt)
    - Sätt `IGNORE_USER_ABORT=true` för att förhindra att anslutningen stängs vid timeout
    - **Felmodal**: Visar detaljerad information om timeout-fel
    - **Loggning**: Timeout-värden loggas vid startup för debugging
